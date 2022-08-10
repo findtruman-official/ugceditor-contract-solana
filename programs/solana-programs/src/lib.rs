@@ -3,7 +3,7 @@ use anchor_spl::{token::{Mint, Token, TokenAccount}, associated_token::Associate
 
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
-static uri: &str = "http://10.243.248.69:3000/story-nft/solana/";
+static URI: &str = "http://10.243.248.69:3000/story-nft/solana";
 
 #[account]
 #[derive(Default)]
@@ -19,17 +19,22 @@ pub struct Story {
     author: Pubkey,
     cid: String,
     // bump: u8,
-}
+} 
 
 #[account]
 pub struct StoryNftMintState {
     id: u64,
     total: u64,
     price: u64, // unit $Finds
+    sold: u64,
     author_reserved: u64,
+    author_claimed: u64,
     image: String,
     description: String, // limit 200
     title: String,
+    
+    finds_recv_address: Pubkey,
+    finds_mint: Pubkey,
     // bump: u8,
 }
 
@@ -42,6 +47,12 @@ pub struct StoryUpdated {
 #[event]
 pub struct StoryNftPublished {
     id: u64,
+}
+
+#[event]
+pub struct NftMinted {
+    story_id: u64,    
+    mint: Pubkey,
 }
 
 #[derive(Accounts)]
@@ -140,6 +151,18 @@ pub struct PublishStoryNFT<'info> {
     )]
     pub mint_state: Account<'info, StoryNftMintState>,
 
+
+    finds_mint: Account<'info, Mint>,
+
+    #[account(
+        
+        // init_if_needed,
+        // payer = author,
+        associated_token::mint = finds_mint.to_account_info(),
+        associated_token::authority = author,
+    )]
+    pub finds_recv_account: Account<'info, TokenAccount>, // 收钱的finds账户
+
     pub system_program: Program<'info, System>,
 }
 
@@ -149,6 +172,7 @@ pub struct MintStoryNft<'info> {
     #[account(mut)]
     pub minter: Signer<'info>,
 
+    
     #[account(
         seeds = [
             b"story-".as_ref(), 
@@ -179,11 +203,6 @@ pub struct MintStoryNft<'info> {
     )]
     pub mint: Account<'info, Mint>,
 
-    // /// CHECK: This is not dangerous because we don't read or write from this account
-    // pub mint: UncheckedAccount<'info>,
-    
-
-
     #[account(
         init,
         payer = minter,
@@ -192,8 +211,30 @@ pub struct MintStoryNft<'info> {
     )]
     pub token_account: Account<'info, TokenAccount>,
 
+    #[account(
+        constraint = finds_mint.key() == mint_state.finds_mint
+    )]
+    pub finds_mint: Account<'info, Mint>,
+
+    
+    #[account(
+        mut,
+        associated_token::mint = finds_mint.to_account_info(),
+        associated_token::authority = minter,
+    )]
+    pub finds_send_account: Box<Account<'info, TokenAccount>>, 
+
+    #[account(
+        mut,
+        associated_token::mint = finds_mint.to_account_info(),
+        associated_token::authority = story.author,
+    )]
+    pub finds_recv_account: Box<Account<'info, TokenAccount>>, 
+    
     // /// CHECK: This is not dangerous because we don't read or write from this account
-    // pub token_account: UncheckedAccount<'info>,
+    // #[account(mut)] 
+    // pub finds_send_account: UncheckedAccount<'info>,
+
 
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
@@ -273,6 +314,14 @@ pub mod solana_programs {
         mint_state.total = total;
         mint_state.price = price;
         mint_state.author_reserved = author_reserved;
+        mint_state.sold = 0;
+        mint_state.author_claimed = 0;
+        mint_state.finds_recv_address = ctx.accounts.finds_recv_account.key();
+        mint_state.finds_mint = ctx.accounts.finds_mint.key();
+
+        if author_reserved > total {
+            panic!("Author reserved should less than total")
+        }
         if image.len() > 32 {
             panic!("Image too long")
         }
@@ -297,6 +346,33 @@ pub mod solana_programs {
     
     // 铸造NFT
     pub fn mint_story_nft(ctx: Context<MintStoryNft>, id: u64) -> Result<()> {
+
+        let mint_state = &mut ctx.accounts.mint_state;
+
+        if mint_state.rest_sell_amount() <= 0 {
+            panic!("not enough sell amount");
+        }
+
+        // 收钱Finds
+        let finds_send_account = &mut ctx.accounts.finds_send_account;
+        if finds_send_account.amount < mint_state.price {
+            panic!("not enough tokens");
+        }
+        let cpi_accounts_transfer  = token::Transfer {
+            from: finds_send_account.to_account_info(),
+            to: ctx.accounts.finds_recv_account.to_account_info(),
+            authority: ctx.accounts.minter.to_account_info(),
+        };
+        let cpi_program_token_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx_transfer = CpiContext::new(cpi_program_token_program, cpi_accounts_transfer);
+        token::transfer(cpi_ctx_transfer, mint_state.price)?;
+
+        msg!("send_account balance: {}", ctx.accounts.finds_send_account.amount);
+        
+
+        mint_state.sold += 1;
+
+
         msg!("MINT STORY NFT");
         let cpi_accounts_mint_to = token::MintTo {
             mint: ctx.accounts.mint.to_account_info(),
@@ -349,7 +425,7 @@ pub mod solana_programs {
                 ctx.accounts.minter.key(),
                 ctx.accounts.mint_state.title.clone(),
                 symbol,
-                format!("{}/{}/{}", uri, ctx.accounts.story.id, ctx.accounts.token_account.key()), // 是否改为输入?
+                format!("{}/{}/{}", URI, ctx.accounts.story.id, ctx.accounts.token_account.key()), // 是否改为输入?
                 Some(creator),
                 1,
                 true,
@@ -361,33 +437,37 @@ pub mod solana_programs {
         )?;
         msg!("Metadata Account Created !!!");
 
-        // let master_edition_infos = vec![
-        //     ctx.accounts.master_edition.to_account_info(),
-        //     ctx.accounts.mint.to_account_info(),
-        //     ctx.accounts.minter.to_account_info(), // minter
-        //     ctx.accounts.minter.to_account_info(), // payer
-        //     ctx.accounts.metadata.to_account_info(),
-        //     ctx.accounts.token_metadata_program.to_account_info(),
-        //     ctx.accounts.token_program.to_account_info(),
-        //     ctx.accounts.system_program.to_account_info(),
-        //     ctx.accounts.rent.to_account_info(),
-        // ];
-        // msg!("Master Edition Account Infos Assigned");
-        // invoke(
-        //     &create_master_edition_v3(
-        //         ctx.accounts.token_metadata_program.key(),
-        //         ctx.accounts.master_edition.key(),
-        //         ctx.accounts.mint.key(),
-        //         ctx.accounts.minter.key(),
-        //         ctx.accounts.minter.key(),
-        //         ctx.accounts.metadata.key(),
-        //         ctx.accounts.minter.key(),
-        //         Some(0),
-        //     ),
-        //     master_edition_infos.as_slice(),
-        // )?;
-        // msg!("Master Edition Nft Minted !!!");
+        let master_edition_infos = vec![
+            ctx.accounts.master_edition.to_account_info(),
+            ctx.accounts.mint.to_account_info(),
+            ctx.accounts.minter.to_account_info(), // minter
+            ctx.accounts.minter.to_account_info(), // payer
+            ctx.accounts.metadata.to_account_info(),
+            ctx.accounts.token_metadata_program.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.rent.to_account_info(),
+        ];
+        msg!("Master Edition Account Infos Assigned");
+        invoke(
+            &create_master_edition_v3(
+                ctx.accounts.token_metadata_program.key(),
+                ctx.accounts.master_edition.key(),
+                ctx.accounts.mint.key(),
+                ctx.accounts.minter.key(),
+                ctx.accounts.minter.key(),
+                ctx.accounts.metadata.key(),
+                ctx.accounts.minter.key(),
+                Some(0),
+            ),
+            master_edition_infos.as_slice(),
+        )?;
+        msg!("Master Edition Nft Minted !!!");
 
+        emit!(NftMinted {
+            story_id: ctx.accounts.story.id,
+            mint: ctx.accounts.mint.key(),
+        });
         Ok(())
     }
     // 作家铸造NFT
@@ -405,5 +485,15 @@ impl Story {
 
 
 impl StoryNftMintState {
-    pub const MAX_SIZE: usize = 8 + 8 +8 +8 + (4 + 32) + (4+64) + (4 + 200);
+    pub const MAX_SIZE: usize = 8 + 8 +8 +8 + 8 + 8 + (4 + 32) + (4+64) + (4 + 200);
+
+    fn total_sell_amount(&self) -> u64 {
+        self.total - self.author_reserved
+    }
+    fn rest_sell_amount(&self) ->  u64{
+        self.total - self.author_reserved - self.sold
+    }
+    fn rest_author_amount(&self) -> u64 {
+        self.author_reserved - self.author_claimed
+    }
 }
