@@ -2,14 +2,18 @@
 seeds = false
 skip-lint = false
 [programs.localnet]
-solana_programs = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+solana_programs = "FTAqNNL1ZMZW6AnXCmAfL7RtXFfAriT4K5z6aERRAMPf"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "/home/manager/.config/solana/id.json"
+
+[[test.genesis]]
+address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+program = "test-assets/mpl_token_metadata.so"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

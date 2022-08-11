@@ -1,9 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{token::{Mint, Token, TokenAccount}, associated_token::AssociatedToken};
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
-
-static URI: &str = "http://10.243.248.69:3000/story-nft/solana";
+declare_id!("FTAqNNL1ZMZW6AnXCmAfL7RtXFfAriT4K5z6aERRAMPf");
 
 #[account]
 #[derive(Default)]
@@ -29,8 +27,9 @@ pub struct StoryNftMintState {
     sold: u64,
     author_reserved: u64,
     author_claimed: u64,
-    image: String,
-    description: String, // limit 200
+    uri_prefix: String,
+    // description: String, // limit 200
+    // image: String, 
     title: String,
     
     finds_recv_address: Pubkey,
@@ -259,7 +258,7 @@ pub mod solana_programs {
 
     use anchor_lang::solana_program::program::invoke;
     use anchor_spl::token;
-    use mpl_token_metadata::instruction::{create_metadata_accounts_v2, create_master_edition_v3};
+    use mpl_token_metadata::instruction::{create_master_edition_v3, create_metadata_accounts_v3};
 
     use super::*;
 
@@ -305,9 +304,10 @@ pub mod solana_programs {
         price: u64, 
         total: u64, 
         author_reserved: u64, 
-        image: String, 
+        // image: String, 
         title: String,
-        description: String
+        // description: String
+        uri_prefix: String,
     ) -> Result<()> {
         let mint_state = &mut ctx.accounts.mint_state;
         mint_state.id = id;
@@ -322,20 +322,23 @@ pub mod solana_programs {
         if author_reserved > total {
             panic!("Author reserved should less than total")
         }
-        if image.len() > 32 {
-            panic!("Image too long")
+        // if image.len() > 32 {
+        //     panic!("Image too long")
+        // }
+        // mint_state.image = image;
+        // if description.len() > 200 {
+        //     panic!("Description too long")
+        // }
+        // mint_state.description = description;
+        if uri_prefix.len() > 200 {
+            panic!("uri_prefix too long")
         }
-        mint_state.image = image;
-        if description.len() > 200 {
-            panic!("Description too long")
-        }
-        mint_state.description = description;
+        mint_state.uri_prefix = uri_prefix;
         if title.len() >64 {
             panic!("Title too long")
         }
         mint_state.title = title;
         
-
 
         emit!(StoryNftPublished {
             id: id
@@ -415,8 +418,13 @@ pub mod solana_programs {
         ];
         msg!("Creator Assigned");
         let symbol = std::string::ToString::to_string("Story"); // 是否改为输入?
+        // create_metadata_accounts_v3(program_id, metadata_account, mint, mint_authority, payer, update_authority, name, symbol, uri, creators, seller_fee_basis_points, update_authority_is_signer, is_mutable, collection, uses, collection_details)
+        let uri = format!("{}/{}.json", mint_state.uri_prefix, ctx.accounts.story.id);
+        // let uri = format!("{}/{}/{}", URI, ctx.accounts.story.id, ctx.accounts.token_account.key());
+
+        let creator = Some(creator);
         invoke(
-            &create_metadata_accounts_v2(
+            &create_metadata_accounts_v3(
                 ctx.accounts.token_metadata_program.key(),
                 ctx.accounts.metadata.key(),
                 ctx.accounts.mint.key(),
@@ -425,13 +433,14 @@ pub mod solana_programs {
                 ctx.accounts.minter.key(),
                 ctx.accounts.mint_state.title.clone(),
                 symbol,
-                format!("{}/{}/{}", URI, ctx.accounts.story.id, ctx.accounts.token_account.key()), // 是否改为输入?
-                Some(creator),
+                uri, // 是否改为输入?
+                creator,
                 1,
                 true,
                 false,
                 None,
                 None,
+                None
             ),
             account_info.as_slice(),
         )?;
@@ -480,12 +489,12 @@ impl StoryFactory {
 }
 
 impl Story {
-    pub const MAX_SIZE: usize = 8 + 32 + (4 + 32);
+    pub const MAX_SIZE: usize = 8 + 32 + (4 + 64);
 }
 
 
 impl StoryNftMintState {
-    pub const MAX_SIZE: usize = 8 + 8 +8 +8 + 8 + 8 + (4 + 32) + (4+64) + (4 + 200);
+    pub const MAX_SIZE: usize = 8 + 8 +8 +8 + 8 + 8 + (4 + 200) + (4 + 200) + 32 + 32;
 
     fn total_sell_amount(&self) -> u64 {
         self.total - self.author_reserved

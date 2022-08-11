@@ -4,12 +4,12 @@ import { assert } from "chai";
 import { SolanaPrograms } from "../target/types/solana_programs";
 import {
   createAssociatedTokenAccountInstruction,
-  createInitializeMintInstruction,
   getAssociatedTokenAddress,
+  getOrCreateAssociatedTokenAccount,
   MINT_SIZE,
-  TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { Metaplex } from "@metaplex-foundation/js";
+import { keypairIdentity, Metaplex } from "@metaplex-foundation/js";
+import * as spltoken from "@solana/spl-token";
 
 describe("solana-programs", () => {
   const TOKEN_METADATA_PROGRAM_ID = new anchor.web3.PublicKey(
@@ -81,11 +81,22 @@ describe("solana-programs", () => {
 
   const minter = anchor.web3.Keypair.generate();
 
+  const metaplex = Metaplex.make(anchor.getProvider().connection).use(
+    keypairIdentity(minter)
+  );
+
+  let findsMint: anchor.web3.PublicKey = null;
+
   it("Is initialized!", async () => {
     await airdropSOL({
       provider: anchor.getProvider(),
       target: manager.publicKey,
       amount: anchor.web3.LAMPORTS_PER_SOL,
+    });
+
+    findsMint = await createMintAndAirdrop([{ acc: minter, amount: 1000 }], {
+      connection: anchor.getProvider().connection,
+      payer: manager,
     });
 
     factory = (
@@ -94,8 +105,6 @@ describe("solana-programs", () => {
         program.programId
       )
     )[0];
-
-    // Add your test here.
 
     await program.methods
       .initialize()
@@ -161,21 +170,43 @@ describe("solana-programs", () => {
 
   it("Story published NFT", async () => {
     const storyId = new anchor.BN(1);
+
+    const findsRecvAddr = await getAssociatedTokenAddress(
+      findsMint,
+      author.publicKey
+    );
+
+    const mint_tx = new anchor.web3.Transaction().add(
+      createAssociatedTokenAccountInstruction(
+        author.publicKey,
+        findsRecvAddr,
+        author.publicKey,
+        findsMint
+      )
+    );
+
+    const res = await program.provider.sendAndConfirm(mint_tx, [author]);
+    // console.log(
+    //   await program.provider.connection.getParsedAccountInfo(mintKey.publicKey)
+    // );
+    // console.log(res, "RES")
+
     await program.methods
       .publishStoryNft(
         storyId,
         new anchor.BN(200),
         new anchor.BN(5000),
         new anchor.BN(1200),
-        "IMAGE",
         "TITLE",
-        "DESCRIPTION"
+        "URI_PREFIX"
       )
       .accounts({
         author: author.publicKey,
         story: await getStoryKey(storyId),
         mintState: await getMintStateKey(storyId),
         systemProgram: anchor.web3.SystemProgram.programId,
+        findsMint: findsMint,
+        findsRecvAccount: findsRecvAddr,
       })
       .signers([author])
       .rpc({});
@@ -183,8 +214,7 @@ describe("solana-programs", () => {
     const mintStateData = await program.account.storyNftMintState.fetch(
       await getMintStateKey(storyId)
     );
-    assert.equal(mintStateData.description, "DESCRIPTION");
-    assert.equal(mintStateData.image, "IMAGE");
+    assert.equal(mintStateData.uriPrefix, "URI_PREFIX");
     assert.equal(mintStateData.title, "TITLE");
     assert.equal(mintStateData.authorReserved.toString(), "1200");
     assert.equal(mintStateData.total.toString(), "5000");
@@ -207,42 +237,23 @@ describe("solana-programs", () => {
         MINT_SIZE
       );
 
+    const findsSendAccount = await getOrCreateAssociatedTokenAccount(
+      anchor.getProvider().connection,
+      minter,
+      findsMint,
+      minter.publicKey
+    );
+    // const findsSendAccount = await getAssociatedTokenAddress(
+    //   findsMint,
+    //   minter.publicKey
+    // );
+
     const NftTokenAccount = await getAssociatedTokenAddress(
       mint.publicKey,
       minter.publicKey
     );
     console.log(`NFT TOKEN ACCOUNT ${NftTokenAccount}`);
-    // const mint_tx = new anchor.web3.Transaction().add(
-    //   anchor.web3.SystemProgram.createAccount({
-    //     fromPubkey: minter.publicKey,
-    //     newAccountPubkey: mint.publicKey,
-    //     space: MINT_SIZE,
-    //     programId: TOKEN_PROGRAM_ID,
-    //     lamports,
-    //   }),
-    //   createInitializeMintInstruction(
-    //     mint.publicKey,
-    //     0,
-    //     minter.publicKey,
-    //     minter.publicKey
-    //   ),
-    //   createAssociatedTokenAccountInstruction(
-    //     minter.publicKey,
-    //     NftTokenAccount,
-    //     minter.publicKey,
-    //     minter.publicKey
-    //   )
-    // );
-    // // Mint 是否可以用PDA账户？
 
-    // const res = await program.provider.sendAndConfirm(mint_tx, [mint, minter]);
-    // console.log(
-    //   await program.provider.connection.getParsedAccountInfo(mint.publicKey)
-    // );
-
-    // console.log("Account: ", res);
-    // console.log("Mint key: ", mint.publicKey.toString());
-    // console.log("User: ", minter.publicKey.toString());
     await program.methods
       .mintStoryNft(storyId)
       .accounts({
@@ -254,14 +265,47 @@ describe("solana-programs", () => {
         tokenAccount: NftTokenAccount,
         tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
         masterEdition: await getMasterEditionKey(mint.publicKey),
+        findsMint: findsMint,
+        findsSendAccount: findsSendAccount.address,
+        findsRecvAccount: await getAssociatedTokenAddress(
+          findsMint,
+          author.publicKey
+        ),
       })
       .signers([minter, mint])
-      .rpc({});
+      .rpc({})
+      .catch(console.error);
+
+    const mintStateData = await program.account.storyNftMintState.fetch(
+      await getMintStateKey(storyId)
+    );
+
+    const nftData = await metaplex.nfts().findByMint(mint.publicKey).run();
+
+    const nowSendAccount = await getOrCreateAssociatedTokenAccount(
+      anchor.getProvider().connection,
+      minter,
+      findsMint,
+      minter.publicKey
+    );
+    const nowRecvAccount = await getOrCreateAssociatedTokenAccount(
+      anchor.getProvider().connection,
+      author,
+      findsMint,
+      author.publicKey
+    );
+    assert.equal(nowSendAccount.amount.toString(), "800");
+    assert.equal(nowRecvAccount.amount.toString(), "200");
+
+    assert.equal(nftData.name, "TITLE");
+    assert.equal(nftData.symbol, "Story");
+    assert.equal(nftData.uri, "URI_PREFIX/1.json");
+
+    assert.equal(mintStateData.sold.toString(), "1");
   });
 });
 
 //  Utils
-
 async function airdropSOL(opts: {
   target: anchor.web3.PublicKey;
   amount: number;
@@ -283,4 +327,60 @@ async function airdropSOL(opts: {
 function shortPubkey(pubkey: anchor.web3.PublicKey) {
   const full = `${pubkey}`;
   return "[" + full.slice(0, 6) + "..." + full.slice(full.length - 6) + "]";
+}
+
+async function createMintAndAirdrop(
+  airdrops: { acc: anchor.web3.Keypair; amount: number }[],
+  opts: {
+    connection: anchor.web3.Connection;
+    payer: anchor.web3.Keypair;
+  }
+) {
+  const { connection, payer } = opts;
+  const mintAddr = await spltoken.createMint(
+    connection,
+    payer,
+    payer.publicKey,
+    payer.publicKey,
+    9,
+    undefined,
+    undefined,
+    spltoken.TOKEN_PROGRAM_ID
+  );
+  console.log(`SPLToken: createMint ${mintAddr}`);
+
+  for (const { acc, amount } of airdrops) {
+    const tokenAccount = await spltoken.getOrCreateAssociatedTokenAccount(
+      connection,
+      payer,
+      mintAddr,
+      acc.publicKey
+    );
+    // anchor.web3.Keypair.fromSecretKey
+    // anchor.utils.bytes.bs58.decode
+    anchor.utils.bytes.bs58;
+    console.log(
+      `SPLToken: token-account(${mintAddr}, ${acc.publicKey}) => ${tokenAccount}`
+    );
+    await spltoken.mintTo(
+      connection,
+      payer,
+      mintAddr,
+      tokenAccount.address,
+      payer, // mint authority
+      amount
+    );
+    console.log(`SPLToken: mintTo(${mintAddr}, ${acc.publicKey}) => ${amount}`);
+    // const accountData = await spltoken.getAccount(connection, tokenAccount.address);
+    const accountData = await spltoken.getOrCreateAssociatedTokenAccount(
+      connection,
+      payer,
+      mintAddr,
+      acc.publicKey
+    );
+    console.log(
+      `SPLToken: token-amount(${mintAddr}, ${acc.publicKey}) => ${accountData.amount}`
+    );
+  }
+  return mintAddr;
 }
