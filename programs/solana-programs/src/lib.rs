@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{token::{Mint, Token, TokenAccount}, associated_token::AssociatedToken};
 
-declare_id!("FTAqNNL1ZMZW6AnXCmAfL7RtXFfAriT4K5z6aERRAMPf");
+declare_id!("HTjMwzVwqxL7Tzfi1Lrq1aSsBqQ8zcJLN5Z9UhaApMmF");
 
 #[account]
 #[derive(Default)]
@@ -87,7 +87,7 @@ pub struct PublishStory<'info> {
     )]
     pub factory: Account<'info, StoryFactory>,
 
-    // 线下计算时，使用的nextId可能会产生异步并发问题
+    // TODO cocurrent nextid problem
     #[account(
         init,
         space = 8 + Story::MAX_SIZE,
@@ -160,7 +160,7 @@ pub struct PublishStoryNFT<'info> {
         associated_token::mint = finds_mint.to_account_info(),
         associated_token::authority = author,
     )]
-    pub finds_recv_account: Account<'info, TokenAccount>, // 收钱的finds账户
+    pub finds_recv_account: Account<'info, TokenAccount>,
 
     pub system_program: Program<'info, System>,
 }
@@ -262,7 +262,6 @@ pub mod solana_programs {
 
     use super::*;
 
-    // 创建Factory
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         ctx.accounts.factory.next_id = 1;
         ctx.accounts.factory.manager = ctx.accounts.manager.key();
@@ -271,7 +270,6 @@ pub mod solana_programs {
         Ok(())
     }
 
-    // 发布Story
     pub fn publish_story(ctx: Context<PublishStory>, cid: String) -> Result<()>{
 
         ctx.accounts.story.author = ctx.accounts.author.key();
@@ -288,7 +286,6 @@ pub mod solana_programs {
         Ok(())
     }
     
-    // 更新Story内容
     pub fn update_story(ctx: Context<UpdateStory>, id: u64, cid: String) -> Result<()> {
         ctx.accounts.story.cid = cid;
         emit!(StoryUpdated{
@@ -297,7 +294,6 @@ pub mod solana_programs {
         Ok(())
     }
 
-    // 发布　Story NFT
     pub fn publish_story_nft(
         ctx: Context<PublishStoryNFT>, 
         id: u64, 
@@ -347,7 +343,6 @@ pub mod solana_programs {
         Ok(())
     }
     
-    // 铸造NFT
     pub fn mint_story_nft(ctx: Context<MintStoryNft>, id: u64) -> Result<()> {
 
         let mint_state = &mut ctx.accounts.mint_state;
@@ -356,7 +351,6 @@ pub mod solana_programs {
             panic!("not enough sell amount");
         }
 
-        // 收钱Finds
         let finds_send_account = &mut ctx.accounts.finds_send_account;
         if finds_send_account.amount < mint_state.price {
             panic!("not enough tokens");
@@ -417,7 +411,7 @@ pub mod solana_programs {
             },
         ];
         msg!("Creator Assigned");
-        let symbol = std::string::ToString::to_string("Story"); // 是否改为输入?
+        let symbol = std::string::ToString::to_string("Story"); 
         // create_metadata_accounts_v3(program_id, metadata_account, mint, mint_authority, payer, update_authority, name, symbol, uri, creators, seller_fee_basis_points, update_authority_is_signer, is_mutable, collection, uses, collection_details)
         let uri = format!("{}/{}.json", mint_state.uri_prefix, ctx.accounts.story.id);
         // let uri = format!("{}/{}/{}", URI, ctx.accounts.story.id, ctx.accounts.token_account.key());
@@ -433,8 +427,7 @@ pub mod solana_programs {
                 ctx.accounts.minter.key(),
                 ctx.accounts.mint_state.title.clone(),
                 symbol,
-                uri, // 是否改为输入?
-                creator,
+                uri,
                 1,
                 true,
                 false,
@@ -479,7 +472,7 @@ pub mod solana_programs {
         });
         Ok(())
     }
-    // 作家铸造NFT
+
 
 }
 
