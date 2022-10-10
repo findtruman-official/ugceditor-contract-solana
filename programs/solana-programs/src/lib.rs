@@ -428,6 +428,7 @@ pub mod solana_programs {
                 ctx.accounts.mint_state.title.clone(),
                 symbol,
                 uri,
+                creator,
                 1,
                 true,
                 false,
